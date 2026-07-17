@@ -1,5 +1,9 @@
-// services/api.js
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('auth_token');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+};
 
 export const apiClient = {
   async post(endpoint, data) {
@@ -8,12 +12,19 @@ export const apiClient = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders(),
         },
         body: JSON.stringify(data),
       });
 
+      if (response.status === 401) {
+        localStorage.removeItem('auth_token');
+        window.location.reload();
+      }
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
       }
 
       return await response.json();
@@ -25,10 +36,20 @@ export const apiClient = {
 
   async get(endpoint) {
     try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`);
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        headers: {
+          ...getAuthHeaders(),
+        },
+      });
+
+      if (response.status === 401) {
+        localStorage.removeItem('auth_token');
+        window.location.reload();
+      }
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
       }
 
       return await response.json();

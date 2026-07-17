@@ -1,4 +1,5 @@
-from pydantic import BaseSettings, validator
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 from enum import Enum
 from functools import cached_property
@@ -9,6 +10,13 @@ class AdvertisingPlatform(str, Enum):
     FACEBOOK_ADS = "facebook_ads"
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        use_enum_values=True,
+        extra="ignore"
+    )
+
     # Basic API Configuration
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -20,6 +28,8 @@ class Settings(BaseSettings):
     # Optional Google Ads Configuration
     google_ads_client_id: Optional[str] = None
     google_ads_client_secret: Optional[str] = None
+    google_ads_developer_token: Optional[str] = None
+    google_ads_login_customer_id: Optional[str] = None
     
     # Database Configuration
     database_url: Optional[str] = None
@@ -28,7 +38,9 @@ class Settings(BaseSettings):
     allowed_origins: list = ["http://localhost:3000"]
     
     # AI Model Configuration
-    model_name: str = "deepseek-ai/deepseek-coder-6.7b-base"
+    model_provider: str = "gemini"
+    model_name: str = "gemini-1.5-flash"
+    api_key: Optional[str] = None
     max_tokens: int = 1000
     temperature: float = 0.7
     
@@ -41,11 +53,25 @@ class Settings(BaseSettings):
             self.google_ads_client_secret
         ])
     
-    @validator('advertising_platform', pre=True)
+    @field_validator('advertising_platform', mode='before')
+    @classmethod
     def validate_advertising_platform(cls, v):
         if isinstance(v, str):
             return AdvertisingPlatform(v.lower())
         return v
+    
+    def validate_startup(self):
+        """Fail fast on misconfigurations if Google Ads platform is selected."""
+        if self.advertising_platform == AdvertisingPlatform.GOOGLE_ADS:
+            missing = []
+            if not self.google_ads_client_id:
+                missing.append("GOOGLE_ADS_CLIENT_ID")
+            if not self.google_ads_client_secret:
+                missing.append("GOOGLE_ADS_CLIENT_SECRET")
+            if missing:
+                raise ValueError(
+                    f"Configuration error: {', '.join(missing)} must be set when advertising_platform is 'google_ads'."
+                )
     
     def get_google_ads_config(self) -> dict:
         """
@@ -59,10 +85,6 @@ class Settings(BaseSettings):
             'client_id': self.google_ads_client_id,
             'client_secret': self.google_ads_client_secret,
         }
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        use_enum_values = True
 
 settings = Settings()
+settings.validate_startup()
