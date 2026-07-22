@@ -138,3 +138,47 @@ async def test_session_isolation_regression(client, db_session):
     # Confirm it has user content B and NOT user content A
     assert any("Session B" in m.content for m in msgs_b)
     assert not any("Session A" in m.content for m in msgs_b)
+
+@pytest.mark.asyncio
+async def test_meta_campaign_preview(client, db_session):
+    await client.post("/api/auth/signup", json={"email": "meta@example.com", "password": "password123"})
+    login_res = await client.post("/api/auth/login", json={"email": "meta@example.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
+    preview_response = await client.post(
+        "/api/campaign/preview",
+        json={"type": "restaurant", "name": "Pizza Planet", "location": "New York", "platform": "meta"},
+        headers=headers
+    )
+    assert preview_response.status_code == 200
+    preview_data = preview_response.json()
+    assert preview_data["platform"] == "meta"
+    assert "primary_texts" in preview_data
+
+@pytest.mark.asyncio
+async def test_both_platforms_create_partial_failure(client, db_session):
+    await client.post("/api/auth/signup", json={"email": "both@example.com", "password": "password123"})
+    login_res = await client.post("/api/auth/login", json={"email": "both@example.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
+    from unittest.mock import patch
+    with patch("services.meta_ads_service.MockMetaAdsService.create_campaign", side_effect=Exception("Meta API Down")):
+        create_response = await client.post(
+            "/api/campaign/create",
+            json={
+                "platform": "both",
+                "headlines": ["Best Pizza", "Delicious Dining"],
+                "descriptions": ["Fresh out of the oven pizza in NYC."],
+                "keywords": ["pizza", "nyc pizza"],
+                "daily_budget": 50.0,
+                "location": "New York",
+                "primary_texts": ["Get the best pizza."]
+            },
+            headers=headers
+        )
+        assert create_response.status_code == 200
+        create_data = create_response.json()
+        assert create_data["platform"] == "both"
+        assert create_data["status"] == "partial_success"
+        assert create_data["results"]["google"]["status"] == "success"
+        assert create_data["results"]["meta"]["status"] == "failed"

@@ -18,7 +18,7 @@ export const sendMessage = async (content) => {
   }
 };
 
-export const sendStreamingMessage = async (content, onToken, onBusinessInfo, onCampaignData) => {
+export const sendStreamingMessage = async (content, onToken, onBusinessInfo, onCampaignData, onPlatformPrompt = () => {}) => {
   let sessionId = sessionStorage.getItem('chat_session_id');
   if (!sessionId) {
     sessionId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -78,6 +78,8 @@ export const sendStreamingMessage = async (content, onToken, onBusinessInfo, onC
             onBusinessInfo(parsed);
           } else if (currentEvent === 'campaign_data') {
             onCampaignData(parsed);
+          } else if (currentEvent === 'platform_prompt') {
+            onPlatformPrompt(parsed);
           }
         } catch (e) {
           console.error('Failed to parse SSE line data:', e);

@@ -9,9 +9,9 @@ from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.connection import get_db
 from database.models import User
+from config.config import settings
 
 # Configuration
-SECRET_KEY = "SUPER_SECRET_SECURITY_KEY_FOR_JWT_SESSION_TOKENS"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 # 24 hours
 
@@ -31,7 +31,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
 async def get_current_user(
@@ -46,7 +46,7 @@ async def get_current_user(
     if not token:
         raise credentials_exception
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
@@ -58,3 +58,4 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+

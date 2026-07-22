@@ -7,7 +7,8 @@ import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 from fastapi import HTTPException
-from config.config import settings, AdvertisingPlatform
+from config.config import settings
+from services.ad_platform_service import AdPlatformService
 from utils.helpers import handle_google_ads_error
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def save_stored_refresh_token(refresh_token: str):
     except Exception as e:
         logger.error(f"Error writing google_ads_tokens.json: {e}")
 
-class MockGoogleAdsService:
+class MockGoogleAdsService(AdPlatformService):
     def __init__(self):
         self.campaign_templates = {
             "restaurant": {
@@ -119,9 +120,12 @@ class MockGoogleAdsService:
             keywords = self._format_templates(template['keywords'], business_details)
 
             return {
+                "platform": "google",
                 "headlines": headlines[:5],
                 "descriptions": descriptions[:2],
                 "keywords": keywords[:10],
+                "daily_budget": business_info.get("daily_budget", 10),
+                "location": business_info.get("location") or "Online",
                 "estimated_metrics": self._generate_mock_metrics()
             }
         except Exception as e:
@@ -134,6 +138,7 @@ class MockGoogleAdsService:
             await asyncio.sleep(1)
             campaign_id = f"mock_campaign_{random.randint(1000, 9999)}"
             return {
+                "platform": "google",
                 "campaign_id": campaign_id,
                 "status": "success",
                 "preview_url": f"https://ads.google.com/mock/preview/{campaign_id}",
@@ -162,7 +167,7 @@ class MockGoogleAdsService:
             "conversions": random.randint(5, 20)
         }
 
-class RealGoogleAdsService:
+class RealGoogleAdsService(AdPlatformService):
     def __init__(self):
         self.client = None
         self._init_client()
@@ -251,6 +256,7 @@ class RealGoogleAdsService:
             )
             created_campaign = response.results[0]
             return {
+                "platform": "google",
                 "campaign_id": created_campaign.resource_name,
                 "status": "success",
                 "preview_url": f"https://ads.google.com/aw/campaigns?ocid={customer_id}",
@@ -264,7 +270,11 @@ class RealGoogleAdsService:
             logger.error(f"Unexpected Google Ads campaign creation error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+def is_google_ads_configured() -> bool:
+    return bool(settings.is_google_ads_configured and get_stored_refresh_token())
+
+
 def get_google_ads_service():
-    if settings.advertising_platform == AdvertisingPlatform.GOOGLE_ADS:
+    if is_google_ads_configured():
         return RealGoogleAdsService()
     return MockGoogleAdsService()

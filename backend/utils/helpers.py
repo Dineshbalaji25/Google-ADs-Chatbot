@@ -104,6 +104,27 @@ def handle_google_ads_error(error: GoogleAdsException) -> Dict:
         "details": error_details
     }
 
+def _meta_error_value(error: Any, name: str):
+    value = getattr(error, name, None)
+    return value() if callable(value) else value
+
+
+def handle_meta_ads_error(error: Any) -> Dict:
+    """Handle Meta Marketing API SDK errors."""
+    return {
+        "error_type": "META_ADS_API_ERROR",
+        "timestamp": datetime.now().isoformat(),
+        "details": {
+            "message": _meta_error_value(error, "api_error_message") or str(error),
+            "type": _meta_error_value(error, "api_error_type"),
+            "code": _meta_error_value(error, "api_error_code"),
+            "subcode": _meta_error_value(error, "api_error_subcode"),
+            "http_status": _meta_error_value(error, "http_status"),
+            "blame_fields": _meta_error_value(error, "api_blame_field_specs"),
+            "is_transient": _meta_error_value(error, "api_transient_error"),
+        }
+    }
+
 def validate_campaign_data(campaign_data: Dict) -> Optional[Dict]:
     """Validate campaign data before creation."""
     required_fields = [

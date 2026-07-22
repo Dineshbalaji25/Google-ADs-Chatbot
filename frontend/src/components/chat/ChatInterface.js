@@ -14,6 +14,7 @@ const ChatInterface = () => {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [campaignData, setCampaignData] = useState(null);
+  const [platformPrompt, setPlatformPrompt] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [sidebarTab, setSidebarTab] = useState('draft'); // 'draft' | 'analytics' | 'templates'
   const [darkMode, setDarkMode] = useState(false);
@@ -43,6 +44,7 @@ const ChatInterface = () => {
       { type: 'user', content: text },
       { type: 'assistant', content: '', isStreaming: true }
     ]);
+    setPlatformPrompt(null);
     setLoading(true);
 
     let currentResponseText = '';
@@ -63,10 +65,17 @@ const ChatInterface = () => {
         },
         (businessInfo) => {
           console.log('Business info extracted:', businessInfo);
+          if (!businessInfo.needs_platform_selection) {
+            setPlatformPrompt(null);
+          }
         },
         (data) => {
           setCampaignData(data);
+          setPlatformPrompt(null);
           setSidebarTab('draft'); // Automatically open draft when generated
+        },
+        (prompt) => {
+          setPlatformPrompt(prompt);
         }
       );
 
@@ -95,14 +104,35 @@ const ChatInterface = () => {
   const handleCreateCampaign = async () => {
     setLoading(true);
     try {
+      const descriptions = campaignData.descriptions?.length
+        ? campaignData.descriptions
+        : (campaignData.description ? [campaignData.description] : []);
       const payload = {
+        platform: campaignData.platform || 'google',
         headlines: campaignData.headlines || [],
-        descriptions: campaignData.descriptions || [campaignData.description],
+        descriptions,
         keywords: campaignData.keywords || [],
-        daily_budget: Number(campaignData.daily_budget || 10)
+        daily_budget: Number(campaignData.daily_budget || 10),
+        location: campaignData.location || 'Online',
+        primary_text: campaignData.primary_text || '',
+        primary_texts: campaignData.primary_texts || [],
+        page_id: campaignData.page_id || '',
+        call_to_action: campaignData.call_to_action || '',
+        asset_url: campaignData.asset_url || '',
+        image_hash: campaignData.image_hash || '',
+        video_id: campaignData.video_id || '',
+        link_url: campaignData.link_url || '',
+        previews: campaignData.previews || undefined
       };
       const response = await createCampaign(payload);
-      alert(`Campaign created successfully! ID: ${response.campaign_id}`);
+      if (response.results) {
+        const summary = Object.entries(response.results)
+          .map(([platform, result]) => `${platform}: ${result.status}`)
+          .join(', ');
+        alert(`Campaign create finished: ${summary}`);
+      } else {
+        alert(`Campaign created successfully! ID: ${response.campaign_id}`);
+      }
     } catch (error) {
       console.error('Error creating campaign:', error);
       alert(`Failed to create campaign: ${error.message || error}`);
@@ -114,6 +144,11 @@ const ChatInterface = () => {
   const handleSaveCampaign = (updatedData) => {
     setCampaignData(updatedData);
     setIsEditing(false);
+  };
+
+  const handlePlatformQuickReply = (option) => {
+    setPlatformPrompt(null);
+    handleSendMessage(option.content);
   };
 
   return (
@@ -143,6 +178,22 @@ const ChatInterface = () => {
           {messages.map((message, index) => (
             <ChatBubble key={index} {...message} />
           ))}
+          {platformPrompt && (
+            <div className="flex justify-start">
+              <div className="flex flex-wrap gap-2 max-w-[80%]">
+                {platformPrompt.options.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handlePlatformQuickReply(option)}
+                    className="px-3 py-2 rounded-md border border-blue-200 bg-white text-blue-700 text-xs font-semibold hover:bg-blue-50 dark:bg-slate-800 dark:border-blue-900/60 dark:text-blue-300 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {loading && <Loading />}
           <div ref={messagesEndRef} />
         </div>

@@ -3,8 +3,8 @@ from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
 from contextlib import asynccontextmanager
 import requests
 import logging
@@ -12,12 +12,14 @@ import uuid
 import time
 
 from config.config import settings
-from services.google_ads_service import get_google_ads_service, save_stored_refresh_token
+from services.google_ads_service import save_stored_refresh_token
+from services.ad_platform_service import expand_platform_selection, get_ad_platform_service
 from services.chat_service import ChatService
 from database.connection import engine, Base, get_db
 from database.models import User, Campaign, Conversation, Message
 from utils.auth import get_current_user, create_access_token, get_password_hash, verify_password
 
+from sqlalchemy import inspect, text
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,11 +31,25 @@ from slowapi.errors import RateLimitExceeded
 logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
+
+async def ensure_campaign_platform_column(conn):
+    def column_is_missing(sync_conn):
+        inspector = inspect(sync_conn)
+        if "campaigns" not in inspector.get_table_names():
+            return False
+        columns = inspector.get_columns("campaigns")
+        return "platform" not in {column["name"] for column in columns}
+
+    if await conn.run_sync(column_is_missing):
+        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN platform VARCHAR DEFAULT 'google' NOT NULL"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize database tables on startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await ensure_campaign_platform_column(conn)
         
     # Seed default templates if empty
     from sqlalchemy.orm import sessionmaker
@@ -97,7 +113,7 @@ async def lifespan(app: FastAPI):
     yield
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Google Ads API", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="AI Ads API", version="1.0.0", lifespan=lifespan)
     
     # Configure rate limiter
     app.state.limiter = limiter
@@ -128,8 +144,8 @@ async def structured_logging_and_errors_middleware(request: Request, call_next):
         token = auth_header[7:]
         try:
             from jose import jwt
-            from utils.auth import SECRET_KEY, ALGORITHM
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            from utils.auth import ALGORITHM
+            payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[ALGORITHM])
             user_id = payload.get("sub", "anonymous")
         except Exception:
             pass
@@ -156,7 +172,6 @@ async def structured_logging_and_errors_middleware(request: Request, call_next):
         )
 
 # Initialize services
-ads_service = get_google_ads_service()
 chat_service = ChatService()
 
 # Request/Response Schemas
@@ -177,21 +192,46 @@ class ChatRequest(BaseModel):
     content: str
     session_id: Optional[str] = None
 
+PlatformSelection = Literal["google", "meta", "both"]
+
+
 class BusinessInfo(BaseModel):
     type: str
     name: str
+    platform: PlatformSelection = "google"
     location: Optional[str] = None
     cuisine: Optional[str] = None
     product: Optional[str] = None
     target_audience: Optional[dict] = None
     goals: Optional[List[str]] = None
+    page_id: Optional[str] = None
+    call_to_action: Optional[str] = None
+    asset_url: Optional[str] = None
+    link_url: Optional[str] = None
+    daily_budget: Optional[float] = None
+
 
 class CampaignData(BaseModel):
-    headlines: List[str]
-    descriptions: List[str]
-    keywords: List[str]
+    platform: PlatformSelection = "google"
+    headlines: List[str] = Field(default_factory=list)
+    descriptions: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
     daily_budget: float
     location: str = "Online"
+    campaign_name: Optional[str] = None
+    primary_text: Optional[str] = None
+    primary_texts: List[str] = Field(default_factory=list)
+    headline: Optional[str] = None
+    description: Optional[str] = None
+    page_id: Optional[str] = None
+    call_to_action: Optional[str] = None
+    asset_url: Optional[str] = None
+    image_hash: Optional[str] = None
+    video_id: Optional[str] = None
+    link_url: Optional[str] = None
+    target_audience: Optional[dict] = None
+    optimization_goal: Optional[str] = None
+    previews: Optional[Dict[str, Any]] = None
 
 # Auth Routes
 @app.post("/api/auth/signup", response_model=TokenResponse)
@@ -233,7 +273,7 @@ async def get_google_auth_url():
     client_id = settings.google_ads_client_id
     if not client_id:
         raise HTTPException(status_code=400, detail="Google Ads Client ID is not configured.")
-    redirect_uri = "http://localhost:8000/api/auth/google/callback"
+    redirect_uri = f"{settings.backend_base_url}/api/auth/google/callback"
     scopes = "https://www.googleapis.com/auth/adwords"
     auth_url = (
         "https://accounts.google.com/o/oauth2/v2/auth?"
@@ -252,7 +292,7 @@ async def google_auth_callback(code: str):
     client_secret = settings.google_ads_client_secret
     if not client_id or not client_secret:
         raise HTTPException(status_code=400, detail="Google Ads credentials are not configured.")
-    redirect_uri = "http://localhost:8000/api/auth/google/callback"
+    redirect_uri = f"{settings.backend_base_url}/api/auth/google/callback"
     
     data = {
         "code": code,
@@ -274,13 +314,10 @@ async def google_auth_callback(code: str):
             
         save_stored_refresh_token(refresh_token)
         
-        global ads_service
-        ads_service = get_google_ads_service()
-        
-        return RedirectResponse(url="http://localhost:3000?auth=success")
+        return RedirectResponse(url=f"{settings.frontend_base_url}?auth=success")
     except Exception as e:
         logger.error(f"OAuth callback error: {e}")
-        return RedirectResponse(url=f"http://localhost:3000?auth=error&detail={str(e)}")
+        return RedirectResponse(url=f"{settings.frontend_base_url}?auth=error&detail={str(e)}")
 
 # Core endpoints (secured with get_current_user)
 @app.post("/api/chat")
@@ -299,6 +336,56 @@ async def chat(
         logger.error(f"Chat execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _model_dump(payload: BaseModel) -> Dict[str, Any]:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump()
+    return payload.dict()
+
+
+def _error_detail(error: Exception) -> Any:
+    if isinstance(error, HTTPException):
+        return error.detail
+    return str(error)
+
+
+def _payload_for_platform(payload: Dict[str, Any], platform: str) -> Dict[str, Any]:
+    previews = payload.get("previews") or {}
+    platform_preview = previews.get(platform) or {}
+    merged = {**payload, **platform_preview, "platform": platform}
+    merged.pop("previews", None)
+    return merged
+
+
+async def _persist_campaign(
+    db: AsyncSession,
+    current_user: User,
+    campaign_payload: CampaignData,
+    result: Dict[str, Any],
+    platform: str,
+    platform_payload: Optional[Dict[str, Any]] = None,
+):
+    payload = platform_payload or _model_dump(campaign_payload)
+    headlines = payload.get("headlines") or ([payload.get("headline")] if payload.get("headline") else [])
+    descriptions = payload.get("descriptions") or ([payload.get("description")] if payload.get("description") else [])
+    primary_texts = payload.get("primary_texts") or ([payload.get("primary_text")] if payload.get("primary_text") else [])
+    name = payload.get("campaign_name") or (headlines[0] if headlines else None) or (primary_texts[0] if primary_texts else "Untitled Campaign")
+
+    db_campaign = Campaign(
+        id=result.get("campaign_id", f"{platform}_camp_{int(time.time() * 1000)}"),
+        user_id=current_user.id,
+        name=name,
+        status="PAUSED",
+        platform=platform,
+        headlines=headlines,
+        descriptions=descriptions,
+        keywords=payload.get("keywords") or [],
+        daily_budget=float(payload.get("daily_budget") or campaign_payload.daily_budget),
+        location=payload.get("location") or "Online"
+    )
+    db.add(db_campaign)
+    await db.flush()
+
+
 @app.post("/api/campaign/preview")
 async def generate_preview(
     business_info: BusinessInfo,
@@ -306,10 +393,34 @@ async def generate_preview(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        preview = await ads_service.generate_campaign_preview(business_info.dict(), db)
-        return preview
+        payload = _model_dump(business_info)
+        platforms = expand_platform_selection(payload.get("platform", "google"))
+        if len(platforms) == 1:
+            platform = platforms[0]
+            preview = await get_ad_platform_service(platform).generate_campaign_preview({**payload, "platform": platform}, db)
+            preview.setdefault("platform", platform)
+            return preview
+
+        previews = {}
+        results = {}
+        for platform in platforms:
+            try:
+                preview = await get_ad_platform_service(platform).generate_campaign_preview({**payload, "platform": platform}, db)
+                preview.setdefault("platform", platform)
+                previews[platform] = preview
+                results[platform] = {"status": "success", "preview": preview}
+            except Exception as e:
+                results[platform] = {"status": "failed", "error": _error_detail(e)}
+
+        return {"platform": "both", "previews": previews, "results": results}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"Campaign preview failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/campaign/create")
 async def create_campaign(
@@ -318,24 +429,40 @@ async def create_campaign(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        result = await ads_service.create_campaign(campaign_payload.dict())
-        
-        # Persist Campaign to database scoped to current user
-        db_campaign = Campaign(
-            id=result.get("campaign_id", f"camp_{int(time.time())}"),
-            user_id=current_user.id,
-            name=campaign_payload.headlines[0] if campaign_payload.headlines else "Untitled Campaign",
-            status="PAUSED",
-            headlines=campaign_payload.headlines,
-            descriptions=campaign_payload.descriptions,
-            keywords=campaign_payload.keywords,
-            daily_budget=campaign_payload.daily_budget,
-            location=campaign_payload.location
-        )
-        db.add(db_campaign)
-        await db.flush()
-        
-        return result
+        payload = _model_dump(campaign_payload)
+        platforms = expand_platform_selection(payload.get("platform", "google"))
+
+        if len(platforms) == 1:
+            platform = platforms[0]
+            platform_payload = _payload_for_platform(payload, platform)
+            result = await get_ad_platform_service(platform).create_campaign(platform_payload)
+            result.setdefault("platform", platform)
+            await _persist_campaign(db, current_user, campaign_payload, result, platform, platform_payload)
+            return result
+
+        results = {}
+        for platform in platforms:
+            try:
+                platform_payload = _payload_for_platform(payload, platform)
+                result = await get_ad_platform_service(platform).create_campaign(platform_payload)
+                result.setdefault("platform", platform)
+                await _persist_campaign(db, current_user, campaign_payload, result, platform, platform_payload)
+                results[platform] = result
+            except Exception as e:
+                logger.error(f"{platform} campaign creation failed: {e}")
+                results[platform] = {
+                    "platform": platform,
+                    "status": "failed",
+                    "error": _error_detail(e),
+                }
+
+        success_count = sum(1 for result in results.values() if result.get("status") == "success")
+        aggregate_status = "success" if success_count == len(platforms) else "partial_success" if success_count else "failed"
+        return {"platform": "both", "status": aggregate_status, "results": results}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Campaign creation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -354,6 +481,7 @@ async def get_campaigns(
             "id": c.id,
             "name": c.name,
             "status": c.status,
+            "platform": c.platform,
             "headlines": c.headlines,
             "descriptions": c.descriptions,
             "keywords": c.keywords,

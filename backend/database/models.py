@@ -54,6 +54,7 @@ class Campaign(Base):
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
     status = Column(String, default="PAUSED")
+    platform = Column(String, nullable=False, default="google", server_default="google")
     headlines = Column(JSON, nullable=False)
     descriptions = Column(JSON, nullable=False)
     keywords = Column(JSON, nullable=False)
